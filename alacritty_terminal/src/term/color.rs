@@ -1,5 +1,5 @@
 use std::fmt::{self, Display, Formatter};
-use std::ops::{Index, IndexMut, Mul};
+use std::ops::{Add, Index, IndexMut, Mul};
 use std::str::FromStr;
 
 use log::trace;
@@ -11,9 +11,6 @@ use crate::ansi;
 use crate::config::Colors;
 
 pub const COUNT: usize = 269;
-
-/// Factor for automatic computation of dim colors used by terminal.
-pub const DIM_FACTOR: f32 = 0.66;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Default, Serialize)]
 pub struct Rgb {
@@ -56,9 +53,14 @@ impl Rgb {
 
         (lighter + 0.05) / (darker + 0.05)
     }
+
+    pub fn dim(self, background: Rgb) -> Rgb {
+        // blend current color and background with an opacity of 50%
+        (self * 0.5) + (background * 0.5)
+    }
 }
 
-// A multiply function for Rgb, as the default dim is just *2/3.
+// A multiply function for Rgb, used for calculating dimmed colors.
 impl Mul<f32> for Rgb {
     type Output = Rgb;
 
@@ -70,6 +72,23 @@ impl Mul<f32> for Rgb {
         };
 
         trace!("Scaling RGB by {} from {:?} to {:?}", rhs, self, result);
+
+        result
+    }
+}
+
+// An add function for Rgb, used for calculating dimmed colors.
+impl Add<Rgb> for Rgb {
+    type Output = Rgb;
+
+    fn add(self, other: Rgb) -> Rgb {
+        let result = Rgb {
+            r: (f32::from(self.r) + f32::from(other.r)).max(0.0).min(255.0) as u8,
+            g: (f32::from(self.g) + f32::from(other.g)).max(0.0).min(255.0) as u8,
+            b: (f32::from(self.b) + f32::from(other.b)).max(0.0).min(255.0) as u8,
+        };
+
+        trace!("Adding RGB {} + {} -> {}", self, other, result);
 
         result
     }
@@ -153,7 +172,7 @@ impl FromStr for Rgb {
                 color >>= 8;
                 let r = color as u8;
                 Ok(Rgb { r, g, b })
-            },
+            }
             Err(_) => Err(()),
         }
     }
@@ -271,8 +290,10 @@ impl List {
         self[ansi::NamedColor::Background] = colors.primary.background;
 
         // Dims.
-        self[ansi::NamedColor::DimForeground] =
-            colors.primary.dim_foreground.unwrap_or(colors.primary.foreground * DIM_FACTOR);
+        self[ansi::NamedColor::DimForeground] = colors
+            .primary
+            .dim_foreground
+            .unwrap_or(colors.primary.foreground.dim(colors.primary.background));
         match colors.dim {
             Some(ref dim) => {
                 trace!("Using config-provided dim colors");
@@ -284,18 +305,25 @@ impl List {
                 self[ansi::NamedColor::DimMagenta] = dim.magenta;
                 self[ansi::NamedColor::DimCyan] = dim.cyan;
                 self[ansi::NamedColor::DimWhite] = dim.white;
-            },
+            }
             None => {
                 trace!("Deriving dim colors from normal colors");
-                self[ansi::NamedColor::DimBlack] = colors.normal().black * DIM_FACTOR;
-                self[ansi::NamedColor::DimRed] = colors.normal().red * DIM_FACTOR;
-                self[ansi::NamedColor::DimGreen] = colors.normal().green * DIM_FACTOR;
-                self[ansi::NamedColor::DimYellow] = colors.normal().yellow * DIM_FACTOR;
-                self[ansi::NamedColor::DimBlue] = colors.normal().blue * DIM_FACTOR;
-                self[ansi::NamedColor::DimMagenta] = colors.normal().magenta * DIM_FACTOR;
-                self[ansi::NamedColor::DimCyan] = colors.normal().cyan * DIM_FACTOR;
-                self[ansi::NamedColor::DimWhite] = colors.normal().white * DIM_FACTOR;
-            },
+                self[ansi::NamedColor::DimBlack] =
+                    colors.normal().black.dim(colors.primary.background);
+                self[ansi::NamedColor::DimRed] = colors.normal().red.dim(colors.primary.background);
+                self[ansi::NamedColor::DimGreen] =
+                    colors.normal().green.dim(colors.primary.background);
+                self[ansi::NamedColor::DimYellow] =
+                    colors.normal().yellow.dim(colors.primary.background);
+                self[ansi::NamedColor::DimBlue] =
+                    colors.normal().blue.dim(colors.primary.background);
+                self[ansi::NamedColor::DimMagenta] =
+                    colors.normal().magenta.dim(colors.primary.background);
+                self[ansi::NamedColor::DimCyan] =
+                    colors.normal().cyan.dim(colors.primary.background);
+                self[ansi::NamedColor::DimWhite] =
+                    colors.normal().white.dim(colors.primary.background);
+            }
         }
     }
 
@@ -426,5 +454,21 @@ mod tests {
         let rgb1 = Rgb { r: 0x12, g: 0x34, b: 0x56 };
         let rgb2 = Rgb { r: 0xfe, g: 0xdc, b: 0xba };
         assert!((rgb1.contrast(rgb2) - 9.786_558_997_257_74).abs() < EPSILON);
+    }
+
+    #[test]
+    fn dim() {
+        let c1 = Rgb { r: 127, g: 127, b: 127 };
+        let bg_dark = Rgb { r: 10, g: 10, b: 10 };
+        let dimmed1 = c1.dim(bg_dark);
+        assert!(dimmed1.r < 127);
+        assert!(dimmed1.g < 127);
+        assert!(dimmed1.b < 127);
+
+        let bg_light = Rgb { r: 250, g: 250, b: 250 };
+        let dimmed2 = c1.dim(bg_light);
+        assert!(dimmed2.r > 127);
+        assert!(dimmed2.g > 127);
+        assert!(dimmed2.b > 127);
     }
 }
